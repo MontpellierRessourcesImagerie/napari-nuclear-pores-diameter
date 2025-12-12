@@ -169,6 +169,16 @@ class NuclearPoresAnalyzerWidget(QWidget):
         steps_layout.addWidget(self.steps_input)
         analysis_layout.addLayout(steps_layout)
 
+        # Choose method combo box:
+        method_layout = QHBoxLayout()
+        method_label = QLabel("Method:")
+        self.analysis_method_combo = QComboBox()
+        self.analysis_method_combo.addItem("peaks")
+        self.analysis_method_combo.addItem("gaussian")
+        method_layout.addWidget(method_label)
+        method_layout.addWidget(self.analysis_method_combo)
+        analysis_layout.addLayout(method_layout)
+
         # Export plots checkbox:
         self.export_plots_checkbox = QCheckBox("Export Plots")
         analysis_layout.addWidget(self.export_plots_checkbox)
@@ -268,7 +278,16 @@ class NuclearPoresAnalyzerWidget(QWidget):
             return
         diameter_px = as_pxls(init_diameter, pxl_size)
         plot_path = None if not self.export_plots_checkbox.isChecked() else working_dir
-        results = radial_profiles(image_data, spots_positions, diameter_px, pxl_size, n_steps, working_dir=plot_path)
+        mode = self.analysis_method_combo.currentText()
+        results = radial_profiles(
+            image_data, 
+            spots_positions, 
+            diameter_px, 
+            pxl_size, 
+            n_steps,
+            mode=mode,
+            working_dir=plot_path
+        )
         point_colors = ['green' if r is not None else 'red' for r in results]
         spots_layer.face_color = point_colors
         export_as_csv(results, working_dir)

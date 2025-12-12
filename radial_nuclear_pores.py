@@ -4,6 +4,8 @@ import napari
 import csv
 from pathlib import Path
 from scipy.ndimage import map_coordinates
+from scipy.stats import norm
+from scipy.optimize import curve_fit
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
@@ -22,6 +24,7 @@ def plot_profiles(profiles, median_minima_idx, pl_idx, pr_idx, working_dir, c_id
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.axvline(median_minima_idx, color='red', linestyle='--', label='Median Minima')
+    print(f"Left Peak Index: {pl_idx}, Right Peak Index: {pr_idx}")
     plt.axvline(pl_idx, color='green', linestyle='--', label='Left Peak')
     plt.axvline(pr_idx, color='blue', linestyle='--', label='Right Peak')
     plt.legend()
@@ -75,7 +78,7 @@ def find_peak(smoothed_profile, derivative, start_idx, direction):
             break
     return peak_idx
 
-def analyze_profile(profile, pxl_size):
+def analyze_profile_peaks(profile, pxl_size):
     smoothed = smooth_profile(profile)
     derivative = np.gradient(smoothed)
     minima_idx = find_minima(smoothed, derivative)
@@ -85,6 +88,58 @@ def analyze_profile(profile, pxl_size):
     pr_idx = find_peak(smoothed, derivative, minima_idx, 'right')
     if pl_idx is None or pr_idx is None:
         return None, None, None
+    return minima_idx, pl_idx, pr_idx
+
+def gaussian_center(y):
+    """
+    Estimate the center µ of a 1D Gaussian-like signal y[i].
+    Returns a float µ, potentially between indices.
+    """
+    if len(y) <= 5:
+        return None
+    
+    y = np.asarray(y, dtype=float)
+    x = np.arange(len(y), dtype=float)
+
+    # Gaussian model
+    def gaussian(x, A, mu, sigma, offset):
+        return offset + A * np.exp(-(x - mu)**2 / (2 * sigma**2))
+
+    # Initial guesses
+    A0 = np.max(y) - np.min(y)
+    mu0 = np.argmax(y)       # peak index
+    sigma0 = len(y) / 10     # loose guess
+    offset0 = np.min(y)
+
+    p0 = [A0, mu0, sigma0, offset0]
+
+    # Fit
+    popt, _ = curve_fit(
+        gaussian, x, y, p0=p0, maxfev=5000
+    )
+
+    A, mu, sigma, offset = popt
+    return float(mu)
+
+def analyze_profile_gaussian(profile, pxl_size):
+    smoothed = smooth_profile(profile)
+    derivative = np.gradient(smoothed)
+    minima_idx = find_minima(smoothed, derivative)
+    if minima_idx is None:
+        return None, None, None
+    try:
+        pl_idx = gaussian_center(smoothed[:minima_idx])
+        pr_idx = gaussian_center(smoothed[minima_idx:])
+    except RuntimeError:
+        return None, None, None
+    if pl_idx is None or pr_idx is None:
+        return None, None, None
+    pr_idx += minima_idx
+    if int(pl_idx) <= 0 or int(pr_idx) >= len(smoothed) - 1:
+        return None, None, None
+    if int(pl_idx) >= len(smoothed) or int(pr_idx) <= 0:
+        return None, None, None
+    print(f"µ1: {pl_idx}, µ2: {pr_idx}")
     return minima_idx, pl_idx, pr_idx
 
 def make_profile(image, center, diameter_px, angle):
@@ -99,17 +154,22 @@ def make_profile(image, center, diameter_px, angle):
     return profile
 
 def extract_values(pl_idx, m_idx, pr_idx, profile, pxl_size):
-    left_peak_value = profile[pl_idx]
-    right_peak_value = profile[pr_idx]
+    left_peak_value = profile[int(pl_idx)]
+    if int(pl_idx) < len(profile) - 1:
+        left_peak_value = max(left_peak_value, profile[int(pl_idx)+1])
+    right_peak_value = profile[int(pr_idx)]
+    if int(pr_idx) < len(profile) - 1:
+        right_peak_value = max(right_peak_value, profile[int(pr_idx)+1])
     minima_value = profile[m_idx]
     gap_length = (pr_idx - pl_idx) * pxl_size
     prominence_min = min(left_peak_value - minima_value, right_peak_value - minima_value)
     prominence_max = max(left_peak_value - minima_value, right_peak_value - minima_value)
     return left_peak_value, right_peak_value, minima_value, gap_length, prominence_min, prominence_max
 
-def radial_profiles(image, centroids, diameter_px, pxl_size, n_steps, working_dir=None):
+def radial_profiles(image, centroids, diameter_px, pxl_size, n_steps, mode='peaks', working_dir=None):
     angles = np.linspace(0, 180, n_steps, endpoint=False)
     results = []
+    analyze_profile = analyze_profile_peaks if mode == 'peaks' else analyze_profile_gaussian
     for c_idx, center in enumerate(centroids):
         profiles = []
         for angle in angles:
