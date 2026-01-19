@@ -108,14 +108,24 @@ class NuclearPoresAnalyzer():
         shift = np.array([self.pattern.shape[0]//2, self.pattern.shape[1]//2])
         self.points = np.array([(float(r.centroid[0]), float(r.centroid[1])) for r in regions]) + shift[::-1]
 
+def export_points_to_csv(points, file_path):
+    import csv
+    with open(file_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Y', 'X'])
+        for point in points:
+            writer.writerow(point)
+
 if __name__ == "__main__":
-    folder_path = Path("/home/clement/Downloads/2025-10-16-soumaya-mifobio")
-    image_name = "C2.tif"
-    image_path = folder_path / image_name
-    img_base = tifffile.imread(image_path)
+    folder_path = Path("/home/clement/Documents/projects/measures-orestis/2025-10-27/STED-pores-nucleaires")
+    image_name  = "0v17b.tif"
+    image_path  = folder_path / image_name
+    img_base    = tifffile.imread(image_path)
 
     npa = NuclearPoresAnalyzer()
     npa.set_image_input(img_base)
-    npa.set_pattern_properties(7, 0.95, 5, 2.0)
+    npa.set_pattern_properties(radius=3.0, anisotropy=1.0, padding=5, sigma=1.0)
     npa.generate_pattern()
     npa.process_points()
+    points = npa.get_points()
+    export_points_to_csv(points, folder_path / "detected_nuclear_pores.csv")
