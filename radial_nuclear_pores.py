@@ -5,141 +5,115 @@ from pathlib import Path
 from scipy.ndimage import map_coordinates
 from scipy.stats import norm
 from scipy.optimize import curve_fit
+from tqdm import tqdm
+from scipy.interpolate import CubicSpline
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 
-def plot_profiles(profiles, median_minima_idx, pl_idx, pr_idx, working_dir, c_idx):
+def plot_profiles(properties, working_dir, c_idx, pxl_size, max_img):
     if working_dir is None:
         return
     name = f"profile_centroid_{str(c_idx).zfill(4)}.png"
     path = working_dir / name
     plt.figure(figsize=(10, 6))
-    for i, profile in enumerate(profiles):
-        plt.plot(profile, alpha=0.6, label=f'Profile {i+1}', marker='o', markersize=3)
-    plt.xlabel('Distance (pixels)')
-    plt.ylabel('Intensity')
-    plt.title('Radial Profiles')
+    
+    plt.scatter(properties['x_ori'] * pxl_size, properties['y_ori'], label="original", marker='o')
+    plt.plot(properties['x_inter'] * pxl_size, properties['y_inter'], label="cubic", linestyle='--')
+    plt.plot(properties['x_inter'] * pxl_size, properties['y_base'], label="initial guess", linestyle='-.')
+    plt.plot(properties['x_inter'] * pxl_size, properties['y_theor'], label="fit", linestyle=':')
+    plt.axvline(x=properties['x1'] * pxl_size, color='red', linestyle='--', alpha=0.7, label='x1')
+    plt.axvline(x=properties['x2'] * pxl_size, color='green', linestyle='--', alpha=0.7, label='x2')
+    plt.ylim(0, max_img)
+    plt.title(f"Radial Profile Centroid {c_idx}")
+    plt.xlabel(f"x ({pxl_size} µm/pxl)")
+    plt.ylabel("y")
     plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.axvline(median_minima_idx, color='red', linestyle='--', label='Median Minima')
-    print(f"Left Peak Index: {pl_idx}, Right Peak Index: {pr_idx}")
-    plt.axvline(pl_idx, color='green', linestyle='--', label='Left Peak')
-    plt.axvline(pr_idx, color='blue', linestyle='--', label='Right Peak')
-    plt.legend()
+    plt.grid(True)
+
+    textstr = "\n".join((
+        f"factor = x{properties['factor']:.2f}",
+        f"Ioffset = {properties['i_offset']:.2f}",
+        f"x1 = {pxl_size * properties['x1']:.2f}µm",
+        f"x2 = {pxl_size * properties['x2']:.2f}µm",
+        f"i1 = {properties['i1']:.2f}",
+        f"i2 = {properties['i2']:.2f}",
+        f"fwhm1 = {pxl_size * properties['fwhm1']:.2f}µm",
+        f"fwhm2 = {pxl_size * properties['fwhm2']:.2f}µm",
+        f"shrink = x{properties['shrink']:.2f}"
+    ))
+    plt.text(0.02, 0.98, textstr, transform=plt.gca().transAxes,
+            fontsize=9, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
     plt.savefig(path, dpi=150, bbox_inches='tight')
     plt.close()
 
-def smooth_profile(profile, window_size=2):
-    if window_size < 1:
-        return profile
-    window = np.ones(window_size) / window_size
-    smoothed = np.convolve(profile, window, mode='same')
-    return smoothed
+def double_gaussian(x, offset, x1, x2, i1, i2, fwhm1, fwhm2):
+    g1 = i1 * np.exp(-4.0 * np.log(2) * ((x - x1) / fwhm1) ** 2)
+    g2 = i2 * np.exp(-4.0 * np.log(2) * ((x - x2) / fwhm2) ** 2)
+    return offset + g1 + g2
 
-def find_minima(smoothed_profile, derivative):
-    minima_idx = len(smoothed_profile) // 2
-    while True:
-        if minima_idx <= 0 or minima_idx >= len(smoothed_profile) - 1:
-            return None
-        m1 = derivative[minima_idx]
-        m2 = derivative[minima_idx + 1]
-        same_sign = (m1 * m2) > 0
-        if same_sign:
-            if m1 < 0:
-                minima_idx += 1
-            else:
-                minima_idx -= 1
-        else:
-            break
-    return minima_idx
+def analyze_profile_gaussian(profile, pxl_size, shrink, factor, max_img):
+    y_ori = np.array(profile)
+    x_ori = np.arange(0, factor * len(profile), factor)
 
-def find_peak(smoothed_profile, derivative, start_idx, direction):
-    peak_idx = start_idx
-    while True:
-        if peak_idx <= 0 or peak_idx >= len(smoothed_profile) - 1:
-            return None
-        m1 = derivative[peak_idx]
-        m2 = derivative[peak_idx + 1]
-        is_peak = (m1 * m2) < 0 and (m1 > 0)
-        if not is_peak:
-            if m1 < 0 and direction == 'left':
-                peak_idx -= 1
-            elif m1 < 0 and direction == 'right':
-                peak_idx += 1
-            elif m1 > 0 and direction == 'left':
-                peak_idx -= 1
-            elif m1 > 0 and direction == 'right':
-                peak_idx += 1
-            else:
-                break
-        else:
-            break
-    return peak_idx
+    spl = CubicSpline(x_ori, y_ori)
+    x_inter = np.arange(0, factor * len(profile), 1)
+    y_inter = spl(x_inter)
 
-def analyze_profile_peaks(profile, pxl_size):
-    smoothed = smooth_profile(profile)
-    derivative = np.gradient(smoothed)
-    minima_idx = find_minima(smoothed, derivative)
-    if minima_idx is None:
-        return None, None, None
-    pl_idx = find_peak(smoothed, derivative, minima_idx, 'left')
-    pr_idx = find_peak(smoothed, derivative, minima_idx, 'right')
-    if pl_idx is None or pr_idx is None:
-        return None, None, None
-    return minima_idx, pl_idx, pr_idx
+    i_offset = np.min(y_inter[len(y_inter)//2-2:len(y_inter)//2+2])
+    x1 = int(len(y_inter) / 4)
+    x2 = int(3 * len(y_inter) / 4)
+    inter = (x2 - x1) * shrink
+    x1 = (x1 + x2) / 2 - inter / 2
+    x2 = (x1 + x2) / 2 + inter / 2
+    i1 = np.max(y_inter[:len(y_inter)//2]) - i_offset
+    i2 = np.max(y_inter[len(y_inter)//2:]) - i_offset
+    fwhm1 = len(y_inter) / 8
+    fwhm2 = len(y_inter) / 8
 
-def gaussian_center(y):
-    """
-    Estimate the center µ of a 1D Gaussian-like signal y[i].
-    Returns a float µ, potentially between indices.
-    """
-    if len(y) <= 5:
+    y_base = double_gaussian(x_inter, i_offset, x1, x2, i1, i2, fwhm1, fwhm2)
+    try:
+        popt, _ = curve_fit(
+            double_gaussian, x_inter, y_inter, p0=[i_offset, x1, x2, i1, i2, fwhm1, fwhm2], maxfev=5000
+        )
+    except RuntimeError:
+        return None
+
+    i_offset_fit, x1_fit, x2_fit, i1_fit, i2_fit, fwhm1_fit, fwhm2_fit = popt
+    y_theor = double_gaussian(x_inter, *popt)
+
+    if (x2_fit - x1_fit) <= 0:
         return None
     
-    y = np.asarray(y, dtype=float)
-    x = np.arange(len(y), dtype=float)
+    prominence_left = (double_gaussian(x1_fit, *popt) - i_offset_fit) / (max_img - i_offset_fit)
+    prominence_right = (double_gaussian(x2_fit, *popt) - i_offset_fit) / (max_img - i_offset_fit)
 
-    # Gaussian model
-    def gaussian(x, A, mu, sigma, offset):
-        return offset + A * np.exp(-(x - mu)**2 / (2 * sigma**2))
+    return {
+        'x_ori'   : x_ori,
+        'y_ori'   : y_ori,
+        'x_inter' : x_inter,
+        'y_inter' : y_inter,
+        'y_base'  : y_base,
+        'y_theor' : y_theor,
+        'i_offset': i_offset_fit,
+        'x1'      : x1_fit,
+        'x2'      : x2_fit,
+        'i1'      : i1_fit,
+        'i2'      : i2_fit,
+        'fwhm1'   : fwhm1_fit,
+        'fwhm2'   : fwhm2_fit,
+        'factor'  : factor,
+        'inter'   : "cubic",
+        'peak_l'  : double_gaussian(x1_fit, *popt),
+        'peak_r'  : double_gaussian(x2_fit, *popt),
+        'minima'  : double_gaussian((x1_fit + x2_fit)/2, *popt),
+        'shrink'  : shrink,
+        'prom_l'  : prominence_left,
+        'prom_r'  : prominence_right
+    }
 
-    # Initial guesses
-    A0 = np.max(y) - np.min(y)
-    mu0 = np.argmax(y)       # peak index
-    sigma0 = len(y) / 10     # loose guess
-    offset0 = np.min(y)
-
-    p0 = [A0, mu0, sigma0, offset0]
-
-    # Fit
-    popt, _ = curve_fit(
-        gaussian, x, y, p0=p0, maxfev=5000
-    )
-
-    A, mu, sigma, offset = popt
-    return float(mu)
-
-def analyze_profile_gaussian(profile, pxl_size):
-    smoothed = smooth_profile(profile)
-    derivative = np.gradient(smoothed)
-    minima_idx = find_minima(smoothed, derivative)
-    if minima_idx is None:
-        return None, None, None
-    try:
-        pl_idx = gaussian_center(smoothed[:minima_idx])
-        pr_idx = gaussian_center(smoothed[minima_idx:])
-    except RuntimeError:
-        return None, None, None
-    if pl_idx is None or pr_idx is None:
-        return None, None, None
-    pr_idx += minima_idx
-    if int(pl_idx) <= 0 or int(pr_idx) >= len(smoothed) - 1:
-        return None, None, None
-    if int(pl_idx) >= len(smoothed) or int(pr_idx) <= 0:
-        return None, None, None
-    print(f"µ1: {pl_idx}, µ2: {pr_idx}")
-    return minima_idx, pl_idx, pr_idx
 
 def make_profile(image, center, diameter_px, angle):
     angle_rad = np.deg2rad(angle)
@@ -152,42 +126,75 @@ def make_profile(image, center, diameter_px, angle):
     profile = map_coordinates(image, coords, order=1, mode='constant', cval=0)
     return profile
 
-def extract_values(pl_idx, m_idx, pr_idx, profile, pxl_size):
-    left_peak_value = profile[int(pl_idx)]
-    if int(pl_idx) < len(profile) - 1:
-        left_peak_value = max(left_peak_value, profile[int(pl_idx)+1])
-    right_peak_value = profile[int(pr_idx)]
-    if int(pr_idx) < len(profile) - 1:
-        right_peak_value = max(right_peak_value, profile[int(pr_idx)+1])
-    minima_value = profile[m_idx]
-    gap_length = (pr_idx - pl_idx) * pxl_size
-    prominence_min = min(left_peak_value - minima_value, right_peak_value - minima_value)
-    prominence_max = max(left_peak_value - minima_value, right_peak_value - minima_value)
-    return left_peak_value, right_peak_value, minima_value, gap_length, prominence_min, prominence_max
+def get_results_keys():
+    return [
+        "Index", "Factor", "X1", "X2", "I1", "I2", "FWHM1", "FWHM2",
+        "IOffset", "Left Peak Value", "Right Peak Value", "Minima Value",
+        "Gap Length (µm)", "StdDev Ratio", "Intensity Ratio", "Prominence Left", 
+        "Prominence Right"
+    ]
 
-def radial_profiles(image, centroids, diameter_px, pxl_size, n_steps, mode='peaks', working_dir=None):
+def add_to_results(properties, pxl_size, c_idx, results):
+    if results is None:
+        return
+    entry    = [0] * len(get_results_keys())
+    entry[0] = c_idx
+    entry[1] = properties['factor']
+    entry[2] = properties['x1'] / properties['factor'] * pxl_size
+    entry[3] = properties['x2'] / properties['factor'] * pxl_size
+    entry[4] = properties['i1']
+    entry[5] = properties['i2']
+    entry[6] = properties['fwhm1'] / properties['factor'] * pxl_size
+    entry[7] = properties['fwhm2'] / properties['factor'] * pxl_size
+    entry[8] = properties['i_offset']
+    entry[9] = properties['peak_l']
+    entry[10]= properties['peak_r']
+    entry[11]= properties['minima']
+    entry[12]= (properties['x2'] - properties['x1']) / properties['factor'] * pxl_size
+    entry[13]= properties['stddev_ratio']
+    entry[14]= properties['intensity_ratio']
+    entry[15]= properties['prom_l']
+    entry[16]= properties['prom_r']
+    results.append(entry)
+
+def smooth_profile(profile, window_size=2):
+    if window_size < 1:
+        return profile
+    window = np.ones(window_size) / window_size
+    smoothed = np.convolve(profile, window, mode='same')
+    return smoothed
+
+def intensities_ratio(profiles, max_img):
+    ratios = (np.mean(np.max(profiles, axis=1)) - np.mean(np.min(profiles, axis=1))) / max_img
+    return np.min(ratios)
+
+def radial_profiles(image, centroids, diameter_px, pxl_size, n_steps, factor, shrink=1.0, working_dir=None):
     angles = np.linspace(0, 180, n_steps, endpoint=False)
     results = []
-    analyze_profile = analyze_profile_peaks if mode == 'peaks' else analyze_profile_gaussian
-    for c_idx, center in enumerate(centroids):
+    max_img = image.max()
+    for c_idx, center in tqdm(enumerate(centroids), total=len(centroids), desc="Analyzing radial profiles"):
         profiles = []
         for angle in angles:
             profile = make_profile(image, center, diameter_px, angle)
             profiles.append(profile)
         profiles = np.array(profiles)
+        stddevs = np.std(profiles, axis=0)
+        std_ratio = np.min(stddevs) / (np.max(stddevs) + 1e-6)
+        int_ratio = intensities_ratio(profiles, max_img)
         avg_profile = np.median(profiles, axis=0)
-        minima_idx, pl_idx, pr_idx = analyze_profile(avg_profile, pxl_size)
-        if minima_idx is None or pl_idx is None or pr_idx is None:
-            print("No minima, left peak or right peak found for centroid at:", center)
+        avg_profile = smooth_profile(avg_profile, window_size=2)
+        properties = analyze_profile_gaussian(avg_profile, pxl_size, shrink, factor, max_img)
+        if properties is None:
             results.append(None)
             continue
-        plot_profiles([avg_profile], minima_idx, pl_idx, pr_idx, working_dir, c_idx)
-        results.append(extract_values(pl_idx, minima_idx, pr_idx, avg_profile, pxl_size))
+        properties['stddev_ratio'] = std_ratio
+        properties['intensity_ratio'] = int_ratio
+        plot_profiles(properties, working_dir, c_idx, pxl_size, max_img)
+        add_to_results(properties, pxl_size, c_idx, results)
     return results
 
-
 def export_as_csv(results, working_dir, filename="radial_profiles_results.csv"):
-    columns = ["Index", "Left Peak Value", "Right Peak Value", "Minima Value", "Gap Length (µm)", "Prominence Min", "Prominence Max"]
+    columns = get_results_keys()
     file_path = working_dir / filename
     with open(file_path, mode='w', newline='') as file:
         writer = csv.writer(file)
@@ -195,8 +202,7 @@ def export_as_csv(results, working_dir, filename="radial_profiles_results.csv"):
         for idx, result in enumerate(results):
             if result is None:
                 continue
-            writer.writerow([idx] + list(result))
-
+            writer.writerow(list(result))
 
 def as_pxls(value, pxl_size):
     return np.ceil(value / pxl_size)
@@ -220,12 +226,14 @@ if __name__ == "__main__":
     image_data = tifffile.imread(image_path)
     points = import_points_from_csv(points_path)
     print(len(points), "points imported.")
-    radial_profiles(
+    results = radial_profiles(
         image_data, 
         points, 
-        diameter_px=as_pxls(0.36, 0.018), 
+        diameter_px=as_pxls(0.25, 0.018), 
         pxl_size=0.018, 
-        n_steps=36, 
-        mode='gaussian', 
-        working_dir=folder_path
+        n_steps=36,
+        factor=10.0,
+        shrink=0.8,
+        working_dir=Path("/tmp/orestis")
     )
+    export_as_csv(results, Path("/tmp/orestis"))

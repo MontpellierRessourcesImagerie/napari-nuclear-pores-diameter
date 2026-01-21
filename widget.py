@@ -154,7 +154,7 @@ class NuclearPoresAnalyzerWidget(QWidget):
         # Initial diameter label + input
         diameter_layout = QHBoxLayout()
         diameter_label = QLabel("Initial Diameter (µm):")
-        self.diameter_input = QLineEdit("0.36")
+        self.diameter_input = QLineEdit("0.25")
         diameter_layout.addWidget(diameter_label)
         diameter_layout.addWidget(self.diameter_input)
         analysis_layout.addLayout(diameter_layout)
@@ -169,15 +169,26 @@ class NuclearPoresAnalyzerWidget(QWidget):
         steps_layout.addWidget(self.steps_input)
         analysis_layout.addLayout(steps_layout)
 
-        # Choose method combo box:
-        method_layout = QHBoxLayout()
-        method_label = QLabel("Method:")
-        self.analysis_method_combo = QComboBox()
-        self.analysis_method_combo.addItem("peaks")
-        self.analysis_method_combo.addItem("gaussian")
-        method_layout.addWidget(method_label)
-        method_layout.addWidget(self.analysis_method_combo)
-        analysis_layout.addLayout(method_layout)
+        # Interpolation factor
+        interpolation_layout = QHBoxLayout()
+        interpolation_label = QLabel("Interpolation Factor:")
+        self.interpolation_input = QSpinBox()
+        self.interpolation_input.setRange(1, 100)
+        self.interpolation_input.setValue(10)
+        interpolation_layout.addWidget(interpolation_label)
+        interpolation_layout.addWidget(self.interpolation_input)
+        analysis_layout.addLayout(interpolation_layout)
+
+        # Shrinking factor
+        shrink_layout = QHBoxLayout()
+        shrink_label = QLabel("Shrinking Factor:")
+        self.shrink_input = QDoubleSpinBox()
+        self.shrink_input.setRange(0.1, 1.0)
+        self.shrink_input.setSingleStep(0.1)
+        self.shrink_input.setValue(0.8)
+        shrink_layout.addWidget(shrink_label)
+        shrink_layout.addWidget(self.shrink_input)
+        analysis_layout.addLayout(shrink_layout)
 
         # Export plots checkbox:
         self.export_plots_checkbox = QCheckBox("Export Plots")
@@ -278,14 +289,16 @@ class NuclearPoresAnalyzerWidget(QWidget):
             return
         diameter_px = as_pxls(init_diameter, pxl_size)
         plot_path = None if not self.export_plots_checkbox.isChecked() else working_dir
-        mode = self.analysis_method_combo.currentText()
+        factor = self.interpolation_input.value()
+        shrink = self.shrink_input.value()
         results = radial_profiles(
             image_data, 
             spots_positions, 
             diameter_px, 
             pxl_size, 
             n_steps,
-            mode=mode,
+            factor=factor,
+            shrink=shrink,
             working_dir=plot_path
         )
         point_colors = ['green' if r is not None else 'red' for r in results]
